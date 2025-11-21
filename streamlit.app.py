@@ -43,11 +43,15 @@ except:
 GENAI_IMPL = None
 genai_module = None
 try:
-    from google import genai
-    GENAI_IMPL = "genai"
+    import google.generativeai as genai
+    GENAI_IMPL = "google.generativeai"
     genai_module = genai
-
 except Exception:
+    try:
+        from google import genai
+        GENAI_IMPL = "genai"
+        genai_module = genai
+    except Exception:
         GENAI_IMPL = None
 
 GEMINI_AVAILABLE = GENAI_IMPL is not None
@@ -213,10 +217,20 @@ def rag_answer_with_llm(question, context_text, provider="gemini", max_tokens=51
     # Try Gemini/Google GenAI first when available
     if GEMINI_AVAILABLE and genai_module is not None:
         try:
-            if GENAI_IMPL == "genai":
+            if GENAI_IMPL == "google.generativeai":
+                # Use google.generativeai (the standard package)
+                try:
+                    genai_module.configure(api_key=GOOGLE_API_KEY)
+                except Exception:
+                    pass
+                model = genai_module.GenerativeModel('gemini-1.5-flash')
+                response = model.generate_content(prompt)
+            elif GENAI_IMPL == "genai":
+                # Use google.genai (newer SDK)
                 client = genai_module.Client(api_key=GOOGLE_API_KEY)
-                response = client.models.generate_content(model="gemini-2.5-flash", contents=[prompt])
+                response = client.models.generate_content(model="gemini-2.0-flash-exp", contents=[prompt])
             else:
+                # Fallback
                 try:
                     genai_module.configure(api_key=GOOGLE_API_KEY)
                 except Exception:
