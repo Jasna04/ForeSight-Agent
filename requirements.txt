@@ -10,4 +10,3 @@ requests
 sendgrid
 openai
 google-generativeai
-genai
