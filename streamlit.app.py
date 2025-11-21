@@ -660,12 +660,29 @@ with tab_dashboard:
     # Add header banner with styling
     st.markdown("""
         <div style='text-align: center; padding: 20px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); border-radius: 10px; margin-bottom: 30px;'>
-            <h1 style='color: white; margin: 0; font-size: 2.5em;'>🔮 ForeSight Agent</h1>
+            <h1 style='color: white; margin: 0; font-size: 2.5em;'>👷 ForeSight Agent</h1>
             <p style='color: #f0f0f0; margin: 10px 0 0 0; font-size: 1.2em;'>AI-Powered Predictive Maintenance System</p>
         </div>
     """, unsafe_allow_html=True)
     
-    st.header("Predictive Maintenance Demo (A2A)")
+    st.header("Intelligent Autonomous Prediction Engine ⚙️")
+    st.markdown("<p style='color: #666; font-size: 0.95em; margin-bottom: 20px;'>Provide device inputs to generate real-time predictions and insights.</p>", unsafe_allow_html=True)
+    
+    # Add custom CSS for input styling
+    st.markdown("""
+        <style>
+        div[data-baseweb="select"] > div {
+            border: 2px solid #667eea !important;
+            border-radius: 8px !important;
+            box-shadow: 0 2px 4px rgba(102, 126, 234, 0.1) !important;
+        }
+        div[data-baseweb="select"] > div:hover {
+            border-color: #764ba2 !important;
+            box-shadow: 0 2px 8px rgba(118, 75, 162, 0.2) !important;
+        }
+        </style>
+    """, unsafe_allow_html=True)
+    
     cols=st.columns([1,1])
     with cols[0]:
         device_id=st.selectbox("🆔 Device ID",DEVICE_IDS)
