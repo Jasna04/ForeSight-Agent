@@ -75,7 +75,39 @@ except:
 # -----------------------------
 # App Config
 # -----------------------------
-st.set_page_config(page_title="Predictive Maintenance (A2A Demo)", layout="wide")
+st.set_page_config(
+    page_title="ForeSight Agent - Predictive Maintenance", 
+    layout="wide",
+    page_icon="🔮",
+    initial_sidebar_state="expanded"
+)
+
+# Custom CSS for better styling
+st.markdown("""
+    <style>
+    .stApp {
+        background: linear-gradient(to bottom, #f8f9fa 0%, #e9ecef 100%);
+    }
+    .main .block-container {
+        padding-top: 2rem;
+    }
+    h1, h2, h3 {
+        color: #667eea;
+    }
+    .stTabs [data-baseweb="tab-list"] {
+        gap: 10px;
+    }
+    .stTabs [data-baseweb="tab"] {
+        border-radius: 5px 5px 0 0;
+        padding: 10px 20px;
+        background-color: #f8f9fa;
+    }
+    .stTabs [aria-selected="true"] {
+        background-color: #667eea;
+        color: white;
+    }
+    </style>
+""", unsafe_allow_html=True)
 
 # Safely get secrets with fallback to None
 def get_secret(key):
@@ -601,6 +633,14 @@ except Exception as e:
 # -----------------------------
 # Sidebar & Config
 # -----------------------------
+st.sidebar.markdown("""
+    <div style='text-align: center; padding: 10px; margin-bottom: 20px;'>
+        <h1 style='margin: 0; font-size: 3em;'>🔧</h1>
+        <h3 style='margin: 5px 0; color: #667eea;'>ForeSight</h3>
+        <p style='margin: 0; font-size: 0.9em; color: #666;'>Predictive Maintenance</p>
+    </div>
+""", unsafe_allow_html=True)
+
 st.sidebar.header("Configuration")
 threshold_days = st.sidebar.slider("Failure threshold (days)", 1, 100, 30)
 DEVICE_IDS = ["DEV001","DEV002","DEV003"]
@@ -617,6 +657,14 @@ if "rag_log" not in st.session_state:
 # Dashboard Tab
 # -----------------------------
 with tab_dashboard:
+    # Add header banner with styling
+    st.markdown("""
+        <div style='text-align: center; padding: 20px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); border-radius: 10px; margin-bottom: 30px;'>
+            <h1 style='color: white; margin: 0; font-size: 2.5em;'>🔮 ForeSight Agent</h1>
+            <p style='color: #f0f0f0; margin: 10px 0 0 0; font-size: 1.2em;'>AI-Powered Predictive Maintenance System</p>
+        </div>
+    """, unsafe_allow_html=True)
+    
     st.header("Predictive Maintenance Demo (A2A)")
     cols=st.columns([1,1])
     with cols[0]:
