@@ -72,9 +72,21 @@ except:
 # App Config
 # -----------------------------
 st.set_page_config(page_title="Predictive Maintenance (A2A Demo)", layout="wide")
-SERPAPI_KEY = os.getenv("SERPAPI_API_KEY") or st.secrets.get("SERPAPI_API_KEY")
-GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY") or st.secrets.get("GOOGLE_API_KEY")
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY") or st.secrets.get("OPENAI_API_KEY")
+
+# Safely get secrets with fallback to None
+def get_secret(key):
+    """Safely get a secret from environment or Streamlit secrets"""
+    env_val = os.getenv(key)
+    if env_val:
+        return env_val
+    try:
+        return st.secrets.get(key)
+    except:
+        return None
+
+SERPAPI_KEY = get_secret("SERPAPI_API_KEY")
+GOOGLE_API_KEY = get_secret("GOOGLE_API_KEY")
+OPENAI_API_KEY = get_secret("OPENAI_API_KEY")
 print(f"OPENAI_API_KEY present: {bool(OPENAI_API_KEY)}")
 if GOOGLE_API_KEY:
     try:
@@ -258,7 +270,7 @@ def rag_answer_with_llm(question, context_text, provider="gemini", max_tokens=51
                 pass
 
     # Fallback to OpenAI
-    if OPENAI_AVAILABLE:
+    if OPENAI_AVAILABLE and OPENAI_API_KEY:
         try:
             messages = [{"role": "system", "content": system_intro}, {"role": "user", "content": prompt}]
             ver = getattr(openai, "__version__", None)
@@ -271,10 +283,7 @@ def rag_answer_with_llm(question, context_text, provider="gemini", max_tokens=51
 
             if hasattr(openai, "OpenAI"):
                 try:
-                    if OPENAI_API_KEY:
-                        client = openai.OpenAI(api_key=OPENAI_API_KEY)
-                    else:
-                        client = openai.OpenAI()
+                    client = openai.OpenAI(api_key=OPENAI_API_KEY)
                     resp = client.chat.completions.create(model="gpt-3.5-turbo", messages=messages,
                                                           max_tokens=max_tokens, temperature=temperature)
                     try:
@@ -328,7 +337,27 @@ def rag_answer_with_llm(question, context_text, provider="gemini", max_tokens=51
         st.session_state['llm_provider_used'] = 'none'
     except Exception:
         pass
+    
+    # Return helpful message when no LLM is configured
+    if not OPENAI_API_KEY and not GOOGLE_API_KEY:
+        return "[No LLM API keys configured. Please set OPENAI_API_KEY or GOOGLE_API_KEY environment variable to enable AI-powered insights.]"
     return "[No LLM configured]"
+
+
+def clean_source_markers(text):
+    """Remove source citations like (Source 1), (Source 4), etc. from text"""
+    if not text:
+        return text
+    # Remove patterns like (Source N) or (source N)
+    cleaned = re.sub(r'\s*\(Source\s+\d+\)', '', text, flags=re.IGNORECASE)
+    # Remove patterns like [Source N] or [source N]
+    cleaned = re.sub(r'\s*\[Source\s+\d+\]', '', cleaned, flags=re.IGNORECASE)
+    # Clean up extra whitespace
+    cleaned = re.sub(r'\s+', ' ', cleaned).strip()
+    # Capitalize first letter
+    if cleaned:
+        cleaned = cleaned[0].upper() + cleaned[1:]
+    return cleaned
 
 
 def parse_llm_analysis(text):
@@ -340,6 +369,16 @@ def parse_llm_analysis(text):
         return {"summary": "", "root_cause": "", "recommended_actions": [], "evidence": [], "confidence": 0.0}
 
     s = text.strip()
+    
+    # Check if this is an error message rather than actual LLM output
+    if s.startswith("[") and s.endswith("]"):
+        return {
+            "summary": s,
+            "root_cause": "LLM service not available",
+            "recommended_actions": ["Configure API keys to enable AI-powered insights"],
+            "evidence": [],
+            "confidence": 0.0
+        }
 
     # Normalize and strip empty lines
     lines = [l.strip() for l in re.split(r"\r?\n", s) if l.strip()]
@@ -354,30 +393,50 @@ def parse_llm_analysis(text):
     if m_root:
         root = m_root.group(2).strip()
 
-    m_actions = re.search(r"(?i)(recommended actions|recommendations|actions|next steps)[:\-]?\s*(.+)$", full, re.S)
+    m_actions = re.search(r"(?i)(recommended actions|recommendations|actions|next steps)[:\-]?\s*(.+?)(?=(top sources|sources|$))", full, re.DOTALL)
     if m_actions:
         tail = m_actions.group(2).strip()
-        items = re.split(r"\n|\r|\*|-|\u2022|\d+\.\s+", tail)
-        actions = [it.strip() for it in items if it and len(it.strip()) > 3]
+        # First try to split by numbered items (1., 2., etc.)
+        numbered_items = re.split(r'\n\s*\d+\.\s+', tail)
+        if len(numbered_items) > 1:
+            # Remove first empty element if exists
+            actions = [it.strip() for it in numbered_items if it and len(it.strip()) > 3]
+        else:
+            # Try bullet points or dashes at start of line
+            bullet_items = re.split(r'\n\s*[-*\u2022]\s+', tail)
+            if len(bullet_items) > 1:
+                actions = [it.strip() for it in bullet_items if it and len(it.strip()) > 3]
+            else:
+                # Split by newlines and filter meaningful lines
+                line_items = [line.strip() for line in tail.split('\n') if line.strip()]
+                # If it's a single paragraph, keep it as one action
+                if len(line_items) == 1 or '\n\n' not in tail:
+                    actions = [tail.strip()] if tail.strip() else []
+                else:
+                    actions = [it for it in line_items if len(it) > 10]
 
     # 2) If no explicit root, look for causal connectors or causal sentences
     if not root:
-        m_cause = re.search(r"(?i)(because|due to|caused by|result of|as a result of)\s+([^\.\n]+)", full)
+        m_cause = re.search(r"(?i)(because|due to|caused by|result of|as a result of)\s+([^\.]+\.?)", full)
         if m_cause:
-            root = m_cause.group(2).strip()
+            # Get the full sentence containing the cause
+            root = m_cause.group(0).strip()
         else:
-            # select sentence with failure-related keywords
+            # select sentences with failure-related keywords
             sents = re.split(r"(?<=[.!?])\s+", s)
-            chosen = None
+            chosen_sents = []
             for sent in sents:
                 if re.search(r"(?i)overheat|overheating|wear|corrod|leak|short circuit|vibration|imbalance|misalign|bearing|lubricat|temperature|pressure|humidity|power|current|voltage|fault|fail", sent):
-                    chosen = sent.strip()
-                    break
-            if not chosen and len(sents) > 1:
-                chosen = sents[1].strip()
-            if not chosen:
-                chosen = sents[0].strip()
-            root = chosen
+                    chosen_sents.append(sent.strip())
+                    if len(chosen_sents) >= 2:  # Get up to 2 relevant sentences
+                        break
+            
+            if chosen_sents:
+                root = " ".join(chosen_sents)
+            elif len(sents) > 1:
+                root = sents[1].strip()
+            else:
+                root = sents[0].strip() if sents else ""
 
     # 3) Evidence extraction: sentences that mention sensors, readings, or failure modes
     evidence = []
@@ -435,9 +494,18 @@ def parse_llm_analysis(text):
     if m_sum:
         summary_raw = m_sum.group(2).strip()
     else:
-        summary_raw = s
-    sents_for_summary = re.split(r"(?<=[.!?])\s+", summary_raw)
-    summary = sents_for_summary[0].strip() if sents_for_summary and sents_for_summary[0].strip() else (summary_raw[:500] + "...")
+        # If no explicit summary section, take content before "Root Cause" or "Recommended Actions"
+        summary_match = re.search(r"^(.+?)(?=(?:root\s*cause|recommended\s*actions|recommended|actions)[:\-])", full, re.DOTALL | re.IGNORECASE)
+        if summary_match:
+            summary_raw = summary_match.group(1).strip()
+        else:
+            summary_raw = s
+    
+    # Keep full summary instead of just first sentence
+    summary = summary_raw if summary_raw else ""
+    # Limit length only if extremely long
+    if len(summary) > 1000:
+        summary = summary[:1000] + "..."
 
     # 6) Simple confidence heuristic (0-1)
     conf = 0.3
@@ -452,21 +520,22 @@ def parse_llm_analysis(text):
         conf += 0.05
     conf = max(0.0, min(0.95, conf))
 
-    # Ensure recommended actions is a list of strings
+    # Ensure recommended actions is a list of strings and clean source markers
     recommended = actions if isinstance(actions, list) else [actions]
+    recommended = [clean_source_markers(a) for a in recommended if a]
 
     return {
-        "summary": summary,
-        "root_cause": root,
+        "summary": clean_source_markers(summary),
+        "root_cause": clean_source_markers(root),
         "recommended_actions": recommended,
-        "evidence": evidence,
+        "evidence": [clean_source_markers(e) for e in evidence],
         "confidence": round(conf, 2)
     }
 
 def sendgrid_alert(pred_data, llm_analysis):
     # Get sender and recipients from environment variables
-    from_email = st.secrets.get("Email_ID")  # must be verified sender
-    to_emails_raw = st.secrets.get("Email_ID", "")
+    from_email = get_secret("Email_ID")  # must be verified sender
+    to_emails_raw = get_secret("Email_ID") or ""
     to_emails = [e.strip() for e in to_emails_raw.split(",") if e.strip()]
 
     # Safety check: must have sender and at least one recipient
@@ -493,9 +562,13 @@ def sendgrid_alert(pred_data, llm_analysis):
     # Send the email
 
     try:
-        sg = SendGridAPIClient(st.secrets.get("SENDGRID_API_KEY"))
-        sg.send(message)
-        st.success("📧 SendGrid email sent!")
+        sendgrid_key = get_secret("SENDGRID_API_KEY")
+        if sendgrid_key:
+            sg = SendGridAPIClient(sendgrid_key)
+            sg.send(message)
+            st.success("📧 SendGrid email sent!")
+        else:
+            st.warning("⚠️ SendGrid API key not configured")
     except Exception as e:
         st.error("❌ SendGrid failed")
         st.exception(e)
@@ -658,52 +731,77 @@ with tab_insights:
 
     # ---- RAG AREA ----
     if st.session_state.rag_log:
-    for entry in st.session_state.rag_log[::-1]:
+        for entry in st.session_state.rag_log[::-1]:
 
-        device_id = entry["device_id"]
-        pred_days = entry["prediction"]
-        rag = entry["rag_summary"]
+            device_id = entry["device_id"]
+            pred_days = entry["prediction"]
+            rag = entry["rag_summary"]
 
-        st.markdown(f"### 🔧 Device: **{device_id}** — ⏳ Pred: **{pred_days:.1f} days**")
+            st.markdown(f"### 🔧 Device: **{device_id}** — ⏳ Pred: **{pred_days:.1f} days**")
 
-        # ---- Summary ----
-        summary_text = rag.get("summary", "").strip()
-        if summary_text:
-            st.markdown(f"**RAG Summary:**\n\n{summary_text}")
+            # ---- Summary ----
+            summary_text = rag.get("summary", "").strip()
+            if summary_text:
+                st.markdown(f"**RAG Summary:**\n\n{summary_text}")
 
-        # ---- Root Cause ----
-        root = (
-            rag.get("root_cause")
-            or rag.get("rag_summary", {}).get("root_cause")
-        )
-        if root:
-            st.markdown(f"\n**Root Cause:**\n- {root}")
+            # ---- Root Cause ----
+            root = (
+                rag.get("root_cause")
+                or rag.get("rag_summary", {}).get("root_cause")
+            )
+            if root:
+                st.markdown(f"\n**Root Cause Analysis:**\n\n{root}")
+                
+                # Show evidence if available
+                evidence = rag.get("evidence", [])
+                if evidence:
+                    st.markdown("\n**Supporting Evidence:**")
+                    for i, ev in enumerate(evidence, 1):
+                        st.markdown(f"{i}. {ev}")
+                
+                # Show confidence if available
+                confidence = rag.get("confidence", 0)
+                if confidence > 0:
+                    conf_pct = int(confidence * 100)
+                    st.markdown(f"\n*Analysis Confidence: {conf_pct}%*")
 
-        # ---- Recommended Actions ----
-        recs = (
-            rag.get("recommended_actions")
-            or rag.get("rag_summary", {}).get("recommended_actions")
-        )
-        if recs:
-            st.markdown("**Recommended Actions:**")
-            for a in recs:
-                st.markdown(f"- {a}")
+            # ---- Recommended Actions ----
+            recs = (
+                rag.get("recommended_actions")
+                or rag.get("rag_summary", {}).get("recommended_actions")
+            )
+            if recs:
+                st.markdown("\n**🔧 Recommended Maintenance Actions:**")
+                # Handle both list and string
+                if isinstance(recs, list):
+                    for i, action in enumerate(recs, 1):
+                        if action and action.strip():
+                            # Format each action nicely with emoji indicators
+                            action_text = action.strip()
+                            # Add checkboxes for interactive feel (display only)
+                            st.markdown(f"**{i}.** {action_text}")
+                else:
+                    st.markdown(f"> {str(recs)}")
+                
+                st.info("💡 **Tip:** Implement these actions in order of priority to prevent failure.")
 
-        # ---- Sources ----
-        st.markdown("\n**Top Sources:**")
-        for src in rag["top_sources"]:
-            snippet = (src.get("snippet") or src.get("title") or "").strip()
-            link = src.get("link", "").strip()
+            # ---- Sources ----
+            st.markdown("\n**Top Sources:**")
+            for src in rag["top_sources"]:
+                snippet = (src.get("snippet") or src.get("title") or "").strip()
+                link = src.get("link", "").strip()
 
-            if snippet and link:
-                st.markdown(f"- {snippet} — [{link}]({link})")
-            elif snippet:
-                st.markdown(f"- {snippet}")
-            elif link:
-                st.markdown(f"- [{link}]({link})")
+                if snippet and link:
+                    st.markdown(f"- {snippet} — [{link}]({link})")
+                elif snippet:
+                    st.markdown(f"- {snippet}")
+                elif link:
+                    st.markdown(f"- [{link}]({link})")
+            
+            st.markdown("---")  # Divider between entries
 
-else:
-    st.info("No RAG/A2A logs yet. High-risk predictions will trigger them automatically.")
+    else:
+        st.info("No RAG/A2A logs yet. High-risk predictions will trigger them automatically.")
 
 
     # ---- SHAP ALWAYS VISIBLE ----
