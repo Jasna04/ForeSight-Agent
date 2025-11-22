@@ -751,11 +751,13 @@ DEVICE_IDS = ["DEV001","DEV002","DEV003"]
 DEVICE_TYPES = ["Pump","Motor","Compressor"]
 
 # Tabs
-tab_dashboard,tab_insights,tab_logs, tab_trends = st.tabs(["📊 Dashboard","🔎 Insights","📋 Logs","📈 Trends"])
+tab_dashboard,tab_insights,tab_logs, tab_trends, tab_about = st.tabs(["📊 Dashboard","🔎 Insights","📋 Logs","📈 Trends","ℹ️ About"])
 if "pred_log" not in st.session_state:
     st.session_state.pred_log=[]
 if "rag_log" not in st.session_state:
     st.session_state.rag_log=[]
+if "welcome_dismissed" not in st.session_state:
+    st.session_state.welcome_dismissed=False
 
 # -----------------------------
 # Dashboard Tab
@@ -771,6 +773,25 @@ with tab_dashboard:
     
     st.header("Intelligent Autonomous Prediction Engine ⚙️")
     st.markdown("<p style='color: #666; font-size: 0.95em; margin-bottom: 20px;'>Provide device inputs to generate real-time predictions and insights.</p>", unsafe_allow_html=True)
+    
+    # Welcome popup from Bob (dismissible)
+    if not st.session_state.welcome_dismissed:
+        welcome_col1, welcome_col2 = st.columns([0.95, 0.05])
+        with welcome_col1:
+            st.info("""
+👷 **Hey! I'm Bob the Agent** - I can generate real-time predictions and insights for your equipment!
+
+**🚀 Quick Start:**
+1. Select a device ID and type
+2. Adjust sensor sliders to match current readings
+3. Click "Predict Failure Risk"
+4. Review prediction and navigate to Insights tab
+5. Implement recommended maintenance actions
+            """)
+        with welcome_col2:
+            if st.button("✕", key="close_welcome"):
+                st.session_state.welcome_dismissed = True
+                st.rerun()
     
     # Add custom CSS for input styling
     st.markdown("""
@@ -1042,3 +1063,118 @@ with tab_insights:
 
     else:
         st.info("SHAP not available. Showing global feature importances if present.")
+
+# -----------------------------
+# About Tab
+# -----------------------------
+with tab_about:
+    st.header("About ForeSight Agent")
+    
+    st.markdown("""
+    ### 👷 Meet Bob - Your AI-Powered Predictive Maintenance Assistant
+    
+    ForeSight Agent is an intelligent autonomous predictive maintenance system that combines machine learning, 
+    web-based research (RAG), and multi-agent AI capabilities to provide real-time equipment failure predictions 
+    and actionable maintenance insights.
+    
+    ---
+    
+    ### 🔧 How It Works
+    
+    #### 1. **Real-Time Predictions**
+    - Input device sensor data (temperature, vibration, pressure, humidity, power consumption)
+    - Advanced machine learning model predicts days until potential equipment failure
+    - Visual gauge displays risk level with color-coded indicators:
+      - 🔴 **High Risk** (< 25 days): Immediate action required
+      - 🟠 **Moderate Risk** (25-50 days): Plan maintenance soon
+      - 🟢 **Healthy** (> 50 days): Equipment operating normally
+    
+    #### 2. **Intelligent Insights Generation**
+    - **For every prediction**, Bob analyzes your equipment's condition
+    - Performs web-based research to find relevant maintenance best practices
+    - Uses AI (Gemini or OpenAI) to generate contextual insights
+    - If web sources are insufficient, generates device-specific maintenance advice based on:
+      - Sensor reading anomalies
+      - Equipment type (Pump, Motor, Compressor)
+      - Industry best practices for common failure modes
+    
+    #### 3. **Comprehensive Analysis**
+    Each prediction provides:
+    - **Summary**: Overview of equipment condition and risk level
+    - **Root Cause Analysis**: Likely reasons for predicted failure based on sensor patterns
+    - **Recommended Actions**: Prioritized maintenance tasks to prevent failure
+    - **Supporting Evidence**: Sensor readings and patterns that support the analysis
+    - **Top Sources**: Web research findings for additional context
+    
+    #### 4. **SHAP Explainability**
+    - Visual breakdown of which factors (temperature, vibration, etc.) most influence the prediction
+    - Helps understand why the model predicts a certain outcome
+    - Transparent AI decision-making for better trust and understanding
+    
+    #### 5. **Automated Alerting**
+    - High-risk predictions (< 25 days) trigger automatic email alerts via SendGrid
+    - Ensures maintenance teams are immediately notified of critical situations
+    - Email includes full analysis and recommended actions
+    
+    ---
+    
+    ### 📊 Key Features
+    
+    - **Dashboard**: Input sensor data and get instant predictions
+    - **Insights**: View detailed AI-generated maintenance recommendations
+    - **Logs**: Track all predictions with timestamps and sensor values
+    - **Trends**: Visualize sensor data over time to identify patterns
+    - **Bob's Intelligence**: Fallback to intelligent device-specific advice when web research is limited
+    
+    ---
+    
+    ### 🛠️ Supported Equipment
+    
+    **Device Types:**
+    - **Pumps**: Bearing wear, seal degradation, impeller damage, cavitation analysis
+    - **Motors**: Bearing failure, winding insulation, rotor issues, overheating detection
+    - **Compressors**: Valve wear, piston rings, lubrication system monitoring
+    
+    **Monitored Parameters:**
+    - Temperature (°C)
+    - Vibration (mm/s)
+    - Pressure (PSI)
+    - Humidity (%)
+    - Power Consumption (kW)
+    
+    ---
+    
+    ### 🤝 Technology Stack
+    
+    - **Machine Learning**: scikit-learn for predictive modeling
+    - **AI/LLM**: Google Gemini & OpenAI for intelligent analysis
+    - **RAG**: Web search integration via SerpAPI for research-backed insights
+    - **Explainability**: SHAP for transparent AI decision-making
+    - **Visualization**: Plotly, Matplotlib for interactive charts
+    - **Alerting**: SendGrid for automated email notifications
+    
+    ---
+    
+    ### 💡 Best Practices
+    
+    1. **Regular Monitoring**: Check predictions weekly or when sensor values change significantly
+    2. **Act on High-Risk Alerts**: Prioritize maintenance for equipment showing < 25 days to failure
+    3. **Review Trends**: Use the Trends tab to identify gradual degradation patterns
+    4. **Follow Recommended Actions**: Implement maintenance tasks in the order suggested
+    5. **Keep Logs**: Use prediction history to track equipment health over time
+    
+    ---
+    
+    ### 🚀 Getting Started
+    
+    1. Select a device ID and type
+    2. Adjust sensor sliders to match current readings
+    3. Click "Predict Failure Risk"
+    4. Review prediction and navigate to Insights tab
+    5. Implement recommended maintenance actions
+    
+    ---
+    
+    **Version**: 2.0  
+    **Powered by**: AI-Driven Predictive Analytics
+    """)
