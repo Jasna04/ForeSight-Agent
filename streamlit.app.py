@@ -829,63 +829,61 @@ with tab_dashboard:
             }
             st.session_state.pred_log.append(log_entry)
 
-            # A2A Trigger
+            # Generate insights for ALL predictions
+            # Create more specific search query with sensor data
+            rag_question=f"""Predictive maintenance for {device_type} showing:
+            - Temperature: {temperature}°C
+            - Vibration: {vibration} mm/s
+            - Pressure: {pressure} PSI
+            - Humidity: {humidity}%
+            - Power consumption: {power} kW
+            - Predicted failure in {pred_value:.1f} days
+            What are the likely failure causes and recommended maintenance actions?"""
+            
+            rag_hits=run_web_rag_search(rag_question, top_k=5)
+            rag_context=build_context_from_hits(rag_hits)
+            llm_provider="gemini" if GEMINI_AVAILABLE else "openai"
+            rag_answer=rag_answer_with_llm(rag_question, rag_context, provider=llm_provider)
+            st.info(f"LLM provider used: {llm_provider}")
+            
+            # Check if LLM response indicates lack of information
+            lacks_info = any(phrase in rag_answer.lower() for phrase in [
+                "don't have specific information",
+                "don't have information",
+                "cannot provide",
+                "no information",
+                "i'm sorry"
+            ])
+            
+            if lacks_info:
+                # Generate generic maintenance advice based on device type and sensors
+                rag_answer = generate_generic_maintenance_advice(device_type, base_inputs, pred_value)
+            
+            # Parse the raw LLM text into structured fields
+            llm_analysis = parse_llm_analysis(rag_answer)
+            rag_summary={
+                "summary": llm_analysis.get("summary"),
+                "root_cause": llm_analysis.get("root_cause"),
+                "recommended_actions": llm_analysis.get("recommended_actions", []),
+                "top_sources":[{"title":h["title"],"snippet":h["snippet"],"link":h["link"]} for h in rag_hits[:3]]
+            }
+            # Store the latest insights
+            st.session_state.rag_log = [{
+                "prediction": pred_value,
+                "device_id": device_id,
+                "rag_summary": rag_summary,
+                "timestamp": datetime.utcnow().isoformat()
+            }]
+            
+            # Send email only for high-risk predictions
             HIGH_RISK_THRESHOLD=25
-            if pred_value < HIGH_RISK_THRESHOLD:
-                # Create more specific search query with sensor data
-                rag_question=f"""Predictive maintenance for {device_type} showing:
-                - Temperature: {temperature}°C
-                - Vibration: {vibration} mm/s
-                - Pressure: {pressure} PSI
-                - Humidity: {humidity}%
-                - Power consumption: {power} kW
-                - Predicted failure in {pred_value:.1f} days
-                What are the likely failure causes and recommended maintenance actions?"""
-                
-                rag_hits=run_web_rag_search(rag_question, top_k=5)
-                rag_context=build_context_from_hits(rag_hits)
-                llm_provider="gemini" if GEMINI_AVAILABLE else "openai"
-                rag_answer=rag_answer_with_llm(rag_question, rag_context, provider=llm_provider)
-                st.info(f"LLM provider used: {llm_provider}")
-                
-                # Check if LLM response indicates lack of information
-                lacks_info = any(phrase in rag_answer.lower() for phrase in [
-                    "don't have specific information",
-                    "don't have information",
-                    "cannot provide",
-                    "no information",
-                    "i'm sorry"
-                ])
-                
-                if lacks_info:
-                    # Generate generic maintenance advice based on device type and sensors
-                    rag_answer = generate_generic_maintenance_advice(device_type, base_inputs, pred_value)
-                
-                # Parse the raw LLM text into structured fields
-                llm_analysis = parse_llm_analysis(rag_answer)
-                rag_summary={
-                    "summary": llm_analysis.get("summary"),
-                    "root_cause": llm_analysis.get("root_cause"),
-                    "recommended_actions": llm_analysis.get("recommended_actions", []),
-                    "top_sources":[{"title":h["title"],"snippet":h["snippet"],"link":h["link"]} for h in rag_hits[:3]]
-                }
-                # Replace previous insights with the new high-risk alert so the UI shows only the latest
-                st.session_state.rag_log = [{
-                    "prediction": pred_value,
-                    "device_id": device_id,
-                    "rag_summary": rag_summary,
-                    "timestamp": datetime.utcnow().isoformat()
-                }]
-                # Send email
-                if SENDGRID_AVAILABLE:
-                    sendgrid_alert(
-                        {"device_id":device_id,"predicted_days_to_failure":pred_value},
-                        {"summary": rag_summary.get("summary"),
-                         "root_cause": rag_summary.get("root_cause"),
-                         "recommended_actions": rag_summary.get("recommended_actions", [])}
-                    )
-            else:
-                st.session_state.rag_log=[]
+            if pred_value < HIGH_RISK_THRESHOLD and SENDGRID_AVAILABLE:
+                sendgrid_alert(
+                    {"device_id":device_id,"predicted_days_to_failure":pred_value},
+                    {"summary": rag_summary.get("summary"),
+                     "root_cause": rag_summary.get("root_cause"),
+                     "recommended_actions": rag_summary.get("recommended_actions", [])}
+                )
 
 with cols[1]:
     st.subheader("Quick Summary")
