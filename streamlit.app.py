@@ -619,6 +619,110 @@ def sendgrid_alert(pred_data, llm_analysis):
         st.error("❌ SendGrid failed")
         st.exception(e)
 
+def generate_generic_maintenance_advice(device_type, sensor_data, pred_days):
+    """Generate generic maintenance advice when specific information is not available"""
+    device_type_lower = device_type.lower()
+    
+    # Analyze sensor readings for anomalies
+    issues = []
+    if sensor_data.get("temperature", 0) > 180:
+        issues.append("elevated temperature")
+    if sensor_data.get("vibration", 0) > 5:
+        issues.append("high vibration levels")
+    if sensor_data.get("pressure", 0) < 85 or sensor_data.get("pressure", 0) > 110:
+        issues.append("abnormal pressure")
+    if sensor_data.get("humidity", 0) > 70:
+        issues.append("high humidity")
+    if sensor_data.get("power_consumption", 0) > 150:
+        issues.append("excessive power consumption")
+    
+    # Build summary
+    if issues:
+        summary = f"The {device_type} is showing {', '.join(issues)} with predicted failure in {pred_days:.1f} days. Immediate maintenance is recommended."
+    else:
+        summary = f"The {device_type} has {pred_days:.1f} days until predicted failure. While sensor readings are within normal ranges, preventive maintenance should be scheduled soon."
+    
+    # Device-specific root causes and actions
+    if "pump" in device_type_lower:
+        root_cause = "Common pump failure causes include bearing wear, seal degradation, impeller damage, or cavitation due to improper operating conditions."
+        if sensor_data.get("vibration", 0) > 5:
+            root_cause = "High vibration levels suggest bearing wear, misalignment, or impeller imbalance."
+        elif sensor_data.get("temperature", 0) > 180:
+            root_cause = "Elevated temperature indicates potential seal failure, bearing lubrication issues, or excessive friction."
+        
+        actions = [
+            "Inspect and replace worn bearings and seals",
+            "Check impeller for damage, erosion, or imbalance",
+            "Verify proper shaft alignment",
+            "Examine suction and discharge conditions for cavitation",
+            "Test and replace mechanical seals if leaking",
+            "Lubricate bearings according to manufacturer specifications"
+        ]
+    
+    elif "motor" in device_type_lower:
+        root_cause = "Common motor failure causes include bearing failure, winding insulation breakdown, rotor issues, or overheating due to overload."
+        if sensor_data.get("temperature", 0) > 180:
+            root_cause = "High temperature suggests overload conditions, poor ventilation, or winding insulation degradation."
+        elif sensor_data.get("vibration", 0) > 5:
+            root_cause = "Excessive vibration indicates bearing wear, rotor imbalance, or mounting issues."
+        elif sensor_data.get("power_consumption", 0) > 150:
+            root_cause = "High power consumption suggests mechanical binding, phase imbalance, or rotor bar damage."
+        
+        actions = [
+            "Inspect and replace motor bearings",
+            "Test winding insulation resistance (megger test)",
+            "Check for proper ventilation and cooling",
+            "Verify voltage balance across all three phases",
+            "Inspect rotor for damage or bar cracks",
+            "Verify motor is not operating beyond rated load",
+            "Clean motor housing and cooling fins"
+        ]
+    
+    elif "compressor" in device_type_lower:
+        root_cause = "Common compressor failures include valve wear, piston ring degradation, bearing failure, or lubrication system issues."
+        if sensor_data.get("temperature", 0) > 180:
+            root_cause = "High temperature indicates inadequate lubrication, valve leakage, or excessive compression ratio."
+        elif sensor_data.get("pressure", 0) < 85:
+            root_cause = "Low pressure suggests valve leakage, piston ring wear, or intercooler fouling."
+        elif sensor_data.get("vibration", 0) > 5:
+            root_cause = "High vibration indicates loose mounting, worn bearings, or piston/cylinder wear."
+        
+        actions = [
+            "Inspect and replace worn valves and valve plates",
+            "Check piston rings and cylinder walls for wear",
+            "Verify lubrication system operation and oil quality",
+            "Inspect and tighten all mounting bolts",
+            "Check and replace air/oil filters",
+            "Examine intercooler for fouling or damage",
+            "Test safety relief valves for proper operation"
+        ]
+    
+    else:
+        root_cause = "Equipment showing signs of wear or degradation based on sensor readings."
+        actions = [
+            "Perform comprehensive visual inspection",
+            "Check all mechanical connections and fasteners",
+            "Verify lubrication levels and quality",
+            "Inspect for leaks or unusual wear patterns",
+            "Schedule detailed diagnostic testing"
+        ]
+    
+    # Filter actions based on detected issues
+    if sensor_data.get("vibration", 0) > 5 and "bearing" in " ".join(actions).lower():
+        # Prioritize bearing-related actions
+        actions = [a for a in actions if "bearing" in a.lower()] + [a for a in actions if "bearing" not in a.lower()]
+    
+    return f"""
+Summary:
+{summary}
+
+Root Cause:
+{root_cause}
+
+Recommended Actions:
+{chr(10).join([f"{i+1}. {action}" for i, action in enumerate(actions[:5])])}
+"""
+
 # -----------------------------
 # Load model
 # -----------------------------
@@ -728,12 +832,35 @@ with tab_dashboard:
             # A2A Trigger
             HIGH_RISK_THRESHOLD=25
             if pred_value < HIGH_RISK_THRESHOLD:
-                rag_question=f"Predictive maintenance advice for device {device_id} of type {device_type}."
+                # Create more specific search query with sensor data
+                rag_question=f"""Predictive maintenance for {device_type} showing:
+                - Temperature: {temperature}°C
+                - Vibration: {vibration} mm/s
+                - Pressure: {pressure} PSI
+                - Humidity: {humidity}%
+                - Power consumption: {power} kW
+                - Predicted failure in {pred_value:.1f} days
+                What are the likely failure causes and recommended maintenance actions?"""
+                
                 rag_hits=run_web_rag_search(rag_question, top_k=5)
                 rag_context=build_context_from_hits(rag_hits)
                 llm_provider="gemini" if GEMINI_AVAILABLE else "openai"
                 rag_answer=rag_answer_with_llm(rag_question, rag_context, provider=llm_provider)
                 st.info(f"LLM provider used: {llm_provider}")
+                
+                # Check if LLM response indicates lack of information
+                lacks_info = any(phrase in rag_answer.lower() for phrase in [
+                    "don't have specific information",
+                    "don't have information",
+                    "cannot provide",
+                    "no information",
+                    "i'm sorry"
+                ])
+                
+                if lacks_info:
+                    # Generate generic maintenance advice based on device type and sensors
+                    rag_answer = generate_generic_maintenance_advice(device_type, base_inputs, pred_value)
+                
                 # Parse the raw LLM text into structured fields
                 llm_analysis = parse_llm_analysis(rag_answer)
                 rag_summary={
