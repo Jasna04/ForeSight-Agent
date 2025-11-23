@@ -184,6 +184,8 @@ class RAGOutput(TypedDict):
     status: str  # "success" or "error"
     insights: str
     sources: List[str]
+    llm_analysis: dict  # Contains summary, root_cause, recommended_actions, evidence, confidence
+    top_sources: List[dict]  # Contains title, snippet, link for each source
     timestamp: str
 
 class EmailInput(TypedDict):
@@ -252,26 +254,53 @@ def plotly_gauge(value, color, max_range=100):
 
 def serpapi_search(query, num_results=5):
     if not SERPAPI_KEY:
+        print("SerpAPI: No API key available")
         return []
     try:
         url = "https://serpapi.com/search.json"
         params = {"q": query, "engine": "google", "num": num_results, "api_key": SERPAPI_KEY}
+        print(f"SerpAPI: Searching for: {query[:100]}...")
         r = requests.get(url, params=params, timeout=15)
+        print(f"SerpAPI: Response status: {r.status_code}")
         r.raise_for_status()
         data = r.json()
+        
+        # Debug: print response keys
+        print(f"SerpAPI: Response keys: {list(data.keys())}")
+        
+        organic_results = data.get("organic_results", [])
+        print(f"SerpAPI: Found {len(organic_results)} organic results")
+        
         results = []
-        for item in data.get("organic_results", [])[:num_results]:
-            results.append({"title": item.get("title"), "snippet": item.get("snippet") or "", "link": item.get("link")})
+        for item in organic_results[:num_results]:
+            title = item.get("title", "Untitled")
+            snippet = item.get("snippet", "")
+            link = item.get("link", "")
+            
+            if link:  # Only add if we have a link
+                results.append({"title": title, "snippet": snippet, "link": link})
+                print(f"SerpAPI: Added result - {title[:50]}...")
+        
+        print(f"SerpAPI: Successfully retrieved {len(results)} results")
         return results
-    except Exception:
+    except Exception as e:
+        print(f"SerpAPI error: {type(e).__name__}: {e}")
+        import traceback
+        traceback.print_exc()
         return []
 
 def run_web_rag_search(query, provider_preference="serpapi", top_k=5):
     try:
+        print(f"Web search called with provider: {provider_preference}, top_k: {top_k}")
         if provider_preference == "serpapi" and SERPAPI_KEY:
-            return serpapi_search(query, num_results=top_k)
+            results = serpapi_search(query, num_results=top_k)
+            print(f"Web search returned {len(results)} results")
+            return results
+        else:
+            print(f"Web search skipped: provider={provider_preference}, SERPAPI_KEY={'available' if SERPAPI_KEY else 'missing'}")
         return []
     except Exception as e:
+        print(f"Web search exception: {e}")
         try:
             st.error(f"Web search error: {e}")
         except Exception:
@@ -298,7 +327,20 @@ def safe_run_web_rag_search(query, provider_preference="serpapi", top_k=5):
     return []
 
 def rag_answer_with_llm(question, context_text, provider="gemini", max_tokens=512, temperature=0.2):
-    system_intro = "You are an expert predictive maintenance assistant. Use context sources. If answer not present, say so."
+    system_intro = """You are an expert predictive maintenance assistant. Analyze the equipment data and provide a structured response.
+
+IMPORTANT: Format your response with these THREE DISTINCT sections:
+
+Summary:
+[Brief overview of the current equipment status and predicted failure timeline - 2-3 sentences]
+
+Root Cause:
+[Detailed analysis of WHY the failure is occurring, based on sensor readings and technical factors - focus on underlying mechanisms]
+
+Recommended Actions:
+[Numbered list of specific maintenance tasks to perform]
+
+Each section must contain DIFFERENT information. Do not repeat the same content across sections."""
     prompt = f"{system_intro}\n\nCONTEXT:\n{context_text}\n\nQUESTION:\n{question}"
 
     # Try Gemini/Google GenAI first when available
@@ -310,7 +352,7 @@ def rag_answer_with_llm(question, context_text, provider="gemini", max_tokens=51
                     genai_module.configure(api_key=GOOGLE_API_KEY)
                 except Exception:
                     pass
-                model = genai_module.GenerativeModel('gemini-1.5-flash')
+                model = genai_module.GenerativeModel('gemini-pro')
                 response = model.generate_content(prompt)
             elif GENAI_IMPL == "genai":
                 # Use google.genai (newer SDK)
@@ -490,23 +532,30 @@ def parse_llm_analysis(text):
     actions = []
 
     # 1) Extract explicit 'Root' and 'Recommended' sections if present
-    m_root = re.search(r"(?i)(root\s*cause[:\-]?\s*)(.+?)(?=(recommended|recommended actions|actions|$))", full, re.S)
+    # Updated to better match section headers and avoid matching inline text
+    m_root = re.search(r"(?i)(?:^|\n)\s*root\s*cause[:\-]?\s*(.+?)(?=(?:\n\s*(?:recommended\s*actions?|recommendations?|next\s*steps?)[:\-])|$)", full, re.S)
     if m_root:
-        root = m_root.group(2).strip()
+        root = m_root.group(1).strip()
 
-    m_actions = re.search(r"(?i)(recommended actions|recommendations|actions|next steps)[:\-]?\s*(.+?)(?=(top sources|sources|$))", full, re.DOTALL)
+    m_actions = re.search(r"(?i)(?:^|\n)\s*(?:recommended\s*actions?|recommendations?|next\s*steps?)[:\-]?\s*(.+?)(?=(?:\n\s*(?:top\s*sources?|sources?|summary)[:\-])|$)", full, re.DOTALL)
     if m_actions:
-        tail = m_actions.group(2).strip()
+        tail = m_actions.group(1).strip()
         # First try to split by numbered items (1., 2., etc.)
         numbered_items = re.split(r'\n\s*\d+\.\s+', tail)
         if len(numbered_items) > 1:
+            # Clean up first item which might start with a number
+            first_item = re.sub(r'^\d+\.\s+', '', numbered_items[0]).strip()
             # Remove first empty element if exists
-            actions = [it.strip() for it in numbered_items if it and len(it.strip()) > 3]
+            actions = [first_item] if first_item and len(first_item) > 3 else []
+            actions.extend([it.strip() for it in numbered_items[1:] if it and len(it.strip()) > 3])
         else:
             # Try bullet points or dashes at start of line
             bullet_items = re.split(r'\n\s*[-*\u2022]\s+', tail)
             if len(bullet_items) > 1:
-                actions = [it.strip() for it in bullet_items if it and len(it.strip()) > 3]
+                # Clean up first item which might start with a bullet
+                first_item = re.sub(r'^[-*\u2022]\s+', '', bullet_items[0]).strip()
+                actions = [first_item] if first_item and len(first_item) > 3 else []
+                actions.extend([it.strip() for it in bullet_items[1:] if it and len(it.strip()) > 3])
             else:
                 # Split by newlines and filter meaningful lines
                 line_items = [line.strip() for line in tail.split('\n') if line.strip()]
@@ -591,12 +640,14 @@ def parse_llm_analysis(text):
             actions = sents_tail[-2:] if len(sents_tail) >= 2 else sents_tail
 
     # 5) Build concise summary (one sentence) preferring explicit Summary section
-    m_sum = re.search(r"(?i)(summary[:\-]?\s*)(.+?)(?=(root|root cause|recommended|$))", full, re.S)
+    # Updated regex to match section headers more precisely (require colon or newline after keywords)
+    m_sum = re.search(r"(?i)(summary[:\-]?\s*)(.+?)(?=(?:\n\s*(?:root\s*cause|recommended\s*actions?)[:\-])|$)", full, re.S)
     if m_sum:
         summary_raw = m_sum.group(2).strip()
     else:
-        # If no explicit summary section, take content before "Root Cause" or "Recommended Actions"
-        summary_match = re.search(r"^(.+?)(?=(?:root\s*cause|recommended\s*actions|recommended|actions)[:\-])", full, re.DOTALL | re.IGNORECASE)
+        # If no explicit summary section, take content before "Root Cause:" or "Recommended Actions:"
+        # Require colon or newline to distinguish section headers from inline text
+        summary_match = re.search(r"^(.+?)(?=(?:\n\s*(?:root\s*cause|recommended\s*actions?)[:\-]))", full, re.DOTALL | re.IGNORECASE)
         if summary_match:
             summary_raw = summary_match.group(1).strip()
         else:
@@ -827,23 +878,38 @@ async def rag_analysis_tool(params: RAGInput) -> RAGOutput:
     Performs web search and LLM reasoning.
     """
     try:
-        # Build search query
-        rag_question = f"""Predictive maintenance for {params['device_type']} showing:
+        # Build concise search query for web (short and focused)
+        search_query = f"{params['device_type']} failure causes maintenance high temperature vibration"
+        
+        # Build detailed question for LLM
+        rag_question = f"""Analyze this {params['device_type']} predictive maintenance scenario:
+        
+        Sensor Readings:
         - Temperature: {params['temperature']}°C
         - Vibration: {params['vibration']} mm/s
         - Pressure: {params['pressure']} PSI
         - Humidity: {params['humidity']}%
         - Power consumption: {params['power_consumption']} kW
         - Predicted failure in {params['predicted_days']:.1f} days
-        What are the likely failure causes and recommended maintenance actions?"""
         
-        # Perform web search (sync, but in async wrapper)
-        rag_hits = run_web_rag_search(rag_question, provider_preference=params.get("search_provider", "serpapi"), top_k=5)
+        Provide:
+        1. Summary: Brief status overview and urgency level
+        2. Root Cause: Technical explanation of why these specific sensor readings indicate failure
+        3. Recommended Actions: Specific numbered maintenance tasks
+        
+        Make each section distinct with different information."""
+        
+        # Perform web search with concise query
+        print(f"RAG: Using search query: {search_query}")
+        rag_hits = run_web_rag_search(search_query, provider_preference=params.get("search_provider", "serpapi"), top_k=5)
         rag_context = build_context_from_hits(rag_hits)
         
-        # LLM reasoning
+        # Log source retrieval for debugging
+        print(f"RAG Analysis: Retrieved {len(rag_hits)} sources from web search")
+        
+        # LLM reasoning with increased token limit for detailed analysis
         llm_provider = "gemini" if GEMINI_AVAILABLE else "openai"
-        rag_answer = rag_answer_with_llm(rag_question, rag_context, provider=llm_provider)
+        rag_answer = rag_answer_with_llm(rag_question, rag_context, provider=llm_provider, max_tokens=800, temperature=0.3)
         
         # Check if LLM lacks info
         lacks_info = any(phrase in rag_answer.lower() for phrase in [
@@ -872,11 +938,29 @@ async def rag_analysis_tool(params: RAGInput) -> RAGOutput:
         # Parse structured response
         llm_analysis = parse_llm_analysis(rag_answer)
         
-        # Extract sources
-        sources = [h.get("link", "") for h in rag_hits[:3]]
+        # Extract sources with better error handling
+        sources = []
+        top_sources = []
         
-        # Store top sources with metadata
-        top_sources = [{"title":h["title"],"snippet":h["snippet"],"link":h["link"]} for h in rag_hits[:3]]
+        if rag_hits:
+            print(f"RAG Analysis: Processing {len(rag_hits)} hits for sources")
+            for i, h in enumerate(rag_hits[:3]):
+                try:
+                    link = h.get("link", "")
+                    if link:
+                        sources.append(link)
+                    
+                    # Build top_sources with safe access
+                    top_sources.append({
+                        "title": h.get("title", "Untitled Source"),
+                        "snippet": h.get("snippet", ""),
+                        "link": link
+                    })
+                except Exception as e:
+                    print(f"RAG Analysis: Error processing hit {i}: {e}")
+            print(f"RAG Analysis: Created {len(top_sources)} top_sources entries")
+        else:
+            print("RAG Analysis: No rag_hits available - sources will be empty")
         
         # Format insights
         insights_text = f"""Summary: {llm_analysis.get('summary', 'N/A')}
@@ -895,6 +979,9 @@ Recommended Actions:
             "timestamp": datetime.utcnow().isoformat()
         }
     except Exception as e:
+        print(f"RAG Analysis: Exception occurred - {type(e).__name__}: {e}")
+        import traceback
+        traceback.print_exc()
         return {
             "status": "error",
             "insights": f"RAG analysis failed: {str(e)}",
@@ -1159,15 +1246,26 @@ with tab_dashboard:
                 # Display RAG insights (for ALL predictions)
                 if rag_result and rag_result["status"] == "success":
                     llm_provider = "gemini" if GEMINI_AVAILABLE else "openai"
-                    st.info(f"🧠 LLM provider used: {llm_provider}")
+                    num_sources = len(rag_result.get("top_sources", []))
+                    st.info(f"🧠 LLM provider used: {llm_provider} | 📚 Sources found: {num_sources}")
+                    
+                    # Debug logging
+                    print(f"RAG Result keys: {rag_result.keys()}")
+                    print(f"Top sources in rag_result: {len(rag_result.get('top_sources', []))}")
+                    if rag_result.get('top_sources'):
+                        print(f"First source: {rag_result['top_sources'][0]}")
                     
                     # Store RAG results with full metadata
                     rag_summary = {
                         "summary": rag_result["llm_analysis"].get("summary"),
                         "root_cause": rag_result["llm_analysis"].get("root_cause"),
                         "recommended_actions": rag_result["llm_analysis"].get("recommended_actions", []),
+                        "evidence": rag_result["llm_analysis"].get("evidence", []),
+                        "confidence": rag_result["llm_analysis"].get("confidence", 0),
                         "top_sources": rag_result.get("top_sources", [])
                     }
+                    
+                    print(f"Storing rag_summary with {len(rag_summary.get('top_sources', []))} top_sources")
                     
                     st.session_state.rag_log = [{
                         "prediction": pred_value,
@@ -1244,6 +1342,13 @@ with tab_insights:
             device_id = entry["device_id"]
             pred_days = entry["prediction"]
             rag = entry["rag_summary"]
+            
+            # Debug logging for sources
+            print(f"\n=== DISPLAY: Insights Tab ===")
+            print(f"rag_summary keys: {rag.keys()}")
+            print(f"top_sources in rag: {len(rag.get('top_sources', []))}")
+            if rag.get('top_sources'):
+                print(f"First top_source: {rag['top_sources'][0]}")
 
             st.markdown(f"### 🔧 Device: **{device_id}** — ⏳ Pred: **{pred_days:.1f} days**")
 
@@ -1259,19 +1364,6 @@ with tab_insights:
             )
             if root:
                 st.markdown(f"\n**Root Cause Analysis:**\n\n{root}")
-                
-                # Show evidence if available
-                evidence = rag.get("evidence", [])
-                if evidence:
-                    st.markdown("\n**Supporting Evidence:**")
-                    for i, ev in enumerate(evidence, 1):
-                        st.markdown(f"{i}. {ev}")
-                
-                # Show confidence if available
-                confidence = rag.get("confidence", 0)
-                if confidence > 0:
-                    conf_pct = int(confidence * 100)
-                    st.markdown(f"\n*Analysis Confidence: {conf_pct}%*")
 
             # ---- Recommended Actions ----
             recs = (
@@ -1294,17 +1386,33 @@ with tab_insights:
                 st.info("💡 **Tip:** Implement these actions in order of priority to prevent failure.")
 
             # ---- Sources ----
-            st.markdown("\n**Top Sources:**")
-            for src in rag["top_sources"]:
-                snippet = (src.get("snippet") or src.get("title") or "").strip()
-                link = src.get("link", "").strip()
+            top_sources = rag.get("top_sources", [])
+            if top_sources:
+                st.markdown("\n**📚 Top Sources:**")
+                for i, src in enumerate(top_sources, 1):
+                    title = src.get("title", "").strip()
+                    snippet = src.get("snippet", "").strip()
+                    link = src.get("link", "").strip()
 
-                if snippet and link:
-                    st.markdown(f"- {snippet} — [{link}]({link})")
-                elif snippet:
-                    st.markdown(f"- {snippet}")
-                elif link:
-                    st.markdown(f"- [{link}]({link})")
+                    if link:
+                        # Display with title or snippet, and clickable link
+                        display_text = title if title else (snippet[:100] + "..." if len(snippet) > 100 else snippet)
+                        if display_text:
+                            st.markdown(f"{i}. [{display_text}]({link})")
+                        else:
+                            st.markdown(f"{i}. [Source]({link})")
+                        
+                        # Show snippet below if we used title above
+                        if title and snippet:
+                            st.caption(f"   _{snippet[:150]}{'...' if len(snippet) > 150 else ''}_")
+                    elif snippet:
+                        st.markdown(f"{i}. {snippet}")
+            else:
+                # Show message when no sources available
+                if not SERPAPI_KEY:
+                    st.info("ℹ️ Web search disabled: Configure SERPAPI_API_KEY for research sources")
+                else:
+                    st.caption("_No external sources available for this analysis_")
             
             st.markdown("---")  # Divider between entries
 
@@ -1386,7 +1494,6 @@ with tab_about:
     - **Summary**: Overview of equipment condition and risk level
     - **Root Cause Analysis**: Likely reasons for predicted failure based on sensor patterns
     - **Recommended Actions**: Prioritized maintenance tasks to prevent failure
-    - **Supporting Evidence**: Sensor readings and patterns that support the analysis
     - **Top Sources**: Web research findings for additional context
     
     #### 4. **SHAP Explainability**
